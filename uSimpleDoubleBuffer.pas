@@ -21,12 +21,14 @@ type
     FCapaticy: Integer;
     FMinSwitchCount: Integer;
     FSwitchCount: Integer;
+    FProducerWaitEvent: TEvent;
+    FConsumerWaitEvent: TEvent;
 
     procedure Switch;
     procedure InitBuffer;
     procedure SetMinSwitchCount(const Value: Integer);
-    function GetProducerCount: Integer;
-    function GetConsumerCount: Integer;
+//    function GetProducerCount: Integer;
+//    function GetConsumerCount: Integer;
   public
     constructor Create(const Capaticy: Integer = MinBufferCapaticy; const AMinSwitchCount: Integer = 1);
     destructor Destroy; override;
@@ -36,8 +38,8 @@ type
     procedure Clear;
 
     property MinSwitchCount: Integer read FMinSwitchCount write SetMinSwitchCount;
-    property ProducerCount: Integer read GetProducerCount;
-    property ConsumerCount: Integer read GetConsumerCount;
+//    property ProducerCount: Integer read GetProducerCount;
+//    property ConsumerCount: Integer read GetConsumerCount;
     //test
     property SwitchCount: Integer read FSwitchCount;
 
@@ -62,7 +64,8 @@ begin
   FMinSwitchCount := AMinSwitchCount;
   if FMinSwitchCount < 1 then
     FMinSwitchCount := 1;
-
+  FProducerWaitEvent := TEvent.Create(nil, True, True, '');
+  FConsumerWaitEvent := TEvent.Create(nil, True, False, '');
   InitBuffer;
 end;
 
@@ -70,7 +73,8 @@ destructor TSimpleDoubleBufferQueue<T>.Destroy;
 begin
   FQueueB.Free;
   FQueueA.Free;
-
+  FProducerWaitEvent.Free;
+  FConsumerWaitEvent.Free;
   inherited;
 end;
 
@@ -88,8 +92,9 @@ end;
 
 procedure TSimpleDoubleBufferQueue<T>.Put(const Value: T);
 begin
+  FProducerWaitEvent.WaitFor;
 
-  if FProducerQueue.Count <= FProducerQueue.Capacity then
+  if FProducerQueue.Count < FProducerQueue.Capacity then
   begin
     TMonitor.Enter(FProducerQueue);
     try
@@ -97,24 +102,21 @@ begin
     finally
       TMonitor.Exit(FProducerQueue);
     end;
-
   end;
-  if FProducerQueue.Count = FProducerQueue.Capacity  then
-  begin
-    { TODO 这里要挂起，要用更好的实现，下面的循环等待不好 2018-03-07}
-    repeat
-      if FConsumerQueue.Count <=0 then
-        Break;
-      TThread.Sleep(1);
-    until FProducerQueue.Count < FProducerQueue.Capacity;
-  end;
-
   if (FProducerQueue.Count >= FMinSwitchCount) and (FConsumerQueue.Count <= 0) then
+  begin
     Switch;
+  end
+  else if (FProducerQueue.Count = FProducerQueue.Capacity) and  (FConsumerQueue.Count > 0) then
+  begin
+    //FConsumerWaitEvent.SetEvent;
+    FProducerWaitEvent.ResetEvent;
+  end;
 end;
 
 function TSimpleDoubleBufferQueue<T>.Get: T;
 begin
+  FConsumerWaitEvent.WaitFor;
 
   if FConsumerQueue.Count > 0 then
   begin
@@ -124,32 +126,27 @@ begin
     finally
       TMonitor.Exit(FConsumerQueue);
     end;
-
   end;
   if (FConsumerQueue.Count <= 0) and (FProducerQueue.Count >= FMinSwitchCount) then
   begin
     Switch;
   end
-  else
+  else if (FConsumerQueue.Count <= 0) and (FProducerQueue.Count < FMinSwitchCount) then
   begin
-    { TODO 这里要挂起，要用更好的实现，下面的循环等待不好 2018-03-07}
-    repeat
-      if FProducerQueue.Count <= 0 then
-        Break;
-      TThread.Sleep(1);
-    until FConsumerQueue.Count > 0;
+    //FProducerWaitEvent.SetEvent;
+    FConsumerWaitEvent.ResetEvent;
   end;
 end;
 
-function TSimpleDoubleBufferQueue<T>.GetConsumerCount: Integer;
-begin
-  Result := FConsumerQueue.Count;
-end;
-
-function TSimpleDoubleBufferQueue<T>.GetProducerCount: Integer;
-begin
-  Result := FProducerQueue.Count;
-end;
+//function TSimpleDoubleBufferQueue<T>.GetConsumerCount: Integer;
+//begin
+//  Result := FConsumerQueue.Count;
+//end;
+//
+//function TSimpleDoubleBufferQueue<T>.GetProducerCount: Integer;
+//begin
+//  Result := FProducerQueue.Count;
+//end;
 
 procedure TSimpleDoubleBufferQueue<T>.SetMinSwitchCount(const Value: Integer);
 begin
@@ -178,7 +175,8 @@ begin
     FProducerQueue := FConsumerQueue;
     FConsumerQueue := tmpPointer;
 
-    TThread.Sleep(5);  //这个好像没啥用
+    FProducerWaitEvent.SetEvent;
+    FConsumerWaitEvent.SetEvent;
   finally
     //TMonitor.Exit(FConsumerQueue);
     TMonitor.Exit(FProducerQueue);
